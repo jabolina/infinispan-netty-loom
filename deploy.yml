@@ -1,0 +1,190 @@
+- name: Install dependencies on all nodes
+  hosts: instances
+  vars:
+    setup: false
+    sdkman_folder: "/home/{{ ansible_user }}/.sdkman"
+    jdk_version: "25.0.2-open"
+    loom_base_url: "https://builds.shipilev.net/openjdk-jdk-loom"
+    loom_install_dir: "/home/{{ ansible_user }}/loom-jdk"
+  tasks:
+    - name: Install system packages
+      package:
+        name: "{{ item }}"
+        state: present
+      become: true
+      loop: [unzip, zip, rsync, perf]
+      when: setup | bool
+
+    - name: Allow unprivileged perf events
+      ansible.builtin.sysctl:
+        name: kernel.perf_event_paranoid
+        value: "-1"
+      become: true
+      when: setup | bool
+
+    - name: Install xz for Loom JDK extraction
+      package:
+        name: xz
+        state: present
+      become: true
+      when: setup | bool
+
+    - name: Install SDKMAN
+      ansible.builtin.shell: "curl -s 'https://get.sdkman.io' | bash"
+      args:
+        creates: "{{ sdkman_folder }}/etc/config"
+      when: setup | bool
+
+    - name: Configure SDKMAN auto-answer
+      ansible.builtin.shell: |
+        sed -i 's/sdkman_auto_answer=false/sdkman_auto_answer=true/g' "{{ sdkman_folder }}/etc/config"
+      when: setup | bool
+
+    - name: Install JDK {{ jdk_version }}
+      ansible.builtin.shell: |
+        source {{ sdkman_folder }}/bin/sdkman-init.sh
+        sdk install java {{ jdk_version }}
+      args:
+        executable: /bin/bash
+      register: jdk_install
+      until: jdk_install.rc == 0
+      retries: 5
+      delay: 10
+      when: setup | bool
+
+    - name: Install JBang
+      ansible.builtin.shell: |
+        source {{ sdkman_folder }}/bin/sdkman-init.sh
+        sdk install jbang
+      args:
+        executable: /bin/bash
+      register: jbang_install
+      until: jbang_install.rc == 0
+      retries: 5
+      delay: 10
+      when: setup | bool
+
+    - name: Clean SDKMAN cache
+      ansible.builtin.shell: |
+        source {{ sdkman_folder }}/bin/sdkman-init.sh
+        sdk flush
+      args:
+        executable: /bin/bash
+      when: setup | bool
+
+    - name: Resolve Loom JDK architecture
+      ansible.builtin.set_fact:
+        loom_arch: "{{ ansible_facts.architecture }}"
+      when: setup | bool
+
+    - name: Download Loom JDK
+      ansible.builtin.get_url:
+        url: "{{ loom_base_url }}/openjdk-jdk-loom-linux-{{ loom_arch }}-server.tar.xz"
+        dest: "/home/{{ ansible_user }}/loom-jdk.tar.xz"
+      when: setup | bool
+      register: loom_download
+
+    - name: Check if Loom JDK is already extracted
+      ansible.builtin.stat:
+        path: "{{ loom_install_dir }}/bin/java"
+      register: loom_java_bin
+      when: setup | bool
+
+    - name: Remove previous Loom JDK installation
+      ansible.builtin.file:
+        path: "{{ loom_install_dir }}"
+        state: absent
+      when: setup | bool and (loom_download is changed or not loom_java_bin.stat.exists)
+
+    - name: Create Loom JDK directory
+      ansible.builtin.file:
+        path: "{{ loom_install_dir }}"
+        state: directory
+      when: setup | bool
+
+    - name: Extract Loom JDK
+      ansible.builtin.shell: |
+        tar -xJf /home/{{ ansible_user }}/loom-jdk.tar.xz -C {{ loom_install_dir }} --strip-components=1
+      args:
+        executable: /bin/bash
+        creates: "{{ loom_install_dir }}/bin/java"
+      when: setup | bool
+
+    - name: Symlink release JVM as server
+      ansible.builtin.file:
+        src: "{{ loom_install_dir }}/lib/release"
+        dest: "{{ loom_install_dir }}/lib/server"
+        state: link
+        force: true
+      when: setup | bool
+
+    - name: Verify Loom JDK
+      ansible.builtin.shell: "{{ loom_install_dir }}/bin/java -version"
+      register: loom_version
+      when: setup | bool
+
+    - name: Show Loom JDK version
+      ansible.builtin.debug:
+        msg: "{{ loom_version.stderr_lines }}"
+      when: setup | bool
+
+- name: Deploy Infinispan server to cluster nodes
+  hosts: "instances:!controller"
+  vars:
+    remote_folder: "/home/{{ ansible_user }}/infinispan"
+  tasks:
+    - name: Remove previous deployment
+      ansible.builtin.file:
+        state: absent
+        path: "{{ remote_folder }}"
+
+    - name: Upload Infinispan distribution
+      ansible.posix.synchronize:
+        src: "{{ ispn_dist }}/"
+        dest: "{{ remote_folder }}"
+
+    - name: Collect private IPs from all server nodes
+      ansible.builtin.set_fact:
+        server_ips: "{{ server_ips | default([]) + [hostvars[item].ansible_facts.default_ipv4.address] }}"
+      loop: "{{ groups['instances'] | difference(groups['controller']) }}"
+
+    - name: Render server configuration
+      ansible.builtin.template:
+        src: infinispan.xml.j2
+        dest: "{{ remote_folder }}/server/conf/infinispan.xml"
+
+    - name: Generate hosts.txt for TCPPING discovery
+      ansible.builtin.template:
+        src: hosts.txt.j2
+        dest: "{{ remote_folder }}/server/conf/hosts.txt"
+
+    - name: Make server.sh executable
+      ansible.builtin.file:
+        path: "{{ remote_folder }}/bin/server.sh"
+        mode: "0755"
+
+    - name: Create admin user
+      ansible.builtin.shell: |
+        {{ remote_folder }}/bin/cli.sh user create admin -p password -g admin
+      args:
+        executable: /bin/bash
+      ignore_errors: true
+
+- name: Deploy benchmark resources to controller node
+  hosts: controller
+  vars:
+    remote_folder: "/home/{{ ansible_user }}"
+  tasks:
+    - name: Upload jbang-catalog
+      ansible.posix.synchronize:
+        src: jbang-catalog/
+        dest: "{{ remote_folder }}/jbang-catalog"
+
+    - name: Resolve server node address for benchmark
+      ansible.builtin.set_fact:
+        benchmark_server: "{{ hostvars[groups['instances'] | difference(groups['controller']) | first].ansible_facts.default_ipv4.address }}"
+
+    - name: Render benchmark definition
+      ansible.builtin.template:
+        src: hf-hr-benchmark.yaml.j2
+        dest: "{{ remote_folder }}/jbang-catalog/hf-hr-benchmark.yaml"

@@ -1,0 +1,103 @@
+- name: Download benchmark results from controller
+  hosts: controller
+  vars:
+    local_data: "{{ playbook_dir }}/data"
+    data_subdir: ""
+    run_label: ""
+  tasks:
+    - name: Resolve download base path
+      ansible.builtin.set_fact:
+        dl_base: "{{ (data_subdir != '') | ternary(local_data + '/' + data_subdir, local_data) }}"
+
+    - name: Create local data directory
+      ansible.builtin.file:
+        path: "{{ dl_base }}"
+        state: directory
+      delegate_to: localhost
+
+    - name: Download run HTML report
+      ansible.builtin.fetch:
+        src: "/home/{{ ansible_user }}/run-{{ run_label }}.html"
+        dest: "{{ dl_base }}/"
+        flat: true
+      ignore_errors: true
+      when: run_label != ""
+
+    - name: Download run log
+      ansible.builtin.fetch:
+        src: "/home/{{ ansible_user }}/run-{{ run_label }}.log"
+        dest: "{{ dl_base }}/"
+        flat: true
+      ignore_errors: true
+      when: run_label != ""
+
+    - name: Download Hyperfoil results directory
+      ansible.posix.synchronize:
+        src: "/tmp/hyperfoil/"
+        dest: "{{ local_data }}/{{ data_subdir.split('/')[0] | default('') }}/hyperfoil"
+        mode: pull
+      when: data_subdir != ""
+
+    - name: Download Hyperfoil results directory
+      ansible.posix.synchronize:
+        src: "/tmp/hyperfoil/"
+        dest: "{{ local_data }}/hyperfoil"
+        mode: pull
+      when: data_subdir == ""
+
+- name: Download server monitoring data
+  hosts: "instances:!controller"
+  vars:
+    local_data: "{{ playbook_dir }}/data"
+    data_subdir: ""
+  tasks:
+    - name: Resolve download base path
+      ansible.builtin.set_fact:
+        dl_node: "{{ (data_subdir != '') | ternary(local_data + '/' + data_subdir + '/' + inventory_hostname, local_data + '/' + inventory_hostname) }}"
+
+    - name: Create per-node data directory
+      ansible.builtin.file:
+        path: "{{ dl_node }}"
+        state: directory
+      delegate_to: localhost
+
+    - name: Download pidstat log
+      ansible.builtin.fetch:
+        src: "/home/{{ ansible_user }}/pidstat.log"
+        dest: "{{ dl_node }}/pidstat.log"
+        flat: true
+      ignore_errors: true
+
+    - name: Download perf stat output
+      ansible.builtin.fetch:
+        src: "/home/{{ ansible_user }}/perf-stat.txt"
+        dest: "{{ dl_node }}/perf-stat.txt"
+        flat: true
+      ignore_errors: true
+
+    - name: Download mpstat log
+      ansible.builtin.fetch:
+        src: "/home/{{ ansible_user }}/mpstat.log"
+        dest: "{{ dl_node }}/mpstat.log"
+        flat: true
+      ignore_errors: true
+
+    - name: Find JFR recordings
+      ansible.builtin.find:
+        paths: "/home/{{ ansible_user }}"
+        patterns: "*.jfr"
+      register: jfr_files
+
+    - name: Download JFR recordings
+      ansible.builtin.fetch:
+        src: "{{ item.path }}"
+        dest: "{{ dl_node }}/"
+        flat: true
+      loop: "{{ jfr_files.files }}"
+
+    - name: Download server log
+      ansible.builtin.fetch:
+        src: "/home/{{ ansible_user }}/infinispan-server.log"
+        dest: "{{ dl_node }}/infinispan-server.log"
+        flat: true
+      ignore_errors: true

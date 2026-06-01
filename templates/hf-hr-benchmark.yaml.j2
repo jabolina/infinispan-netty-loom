@@ -1,0 +1,76 @@
+name: hotrod-benchmark
+hotrod:
+- uri: hotrod://admin:password@{{ benchmark_server }}:11222
+  caches:
+  - benchmark-cache
+
+phases:
+- populate:
+    atOnce:
+      users: 1
+      duration: 1m
+      maxDuration: 2m
+      isWarmup: true
+      scenario:
+      - populateData:
+        - loop:
+            counterVar: key
+            repeats: 10000
+            steps:
+              - randomUUID: cacheValue
+              - hotrodRequest:
+                  put: benchmark-cache
+                  key: key-${key}
+                  value: value-${cacheValue}
+
+- warmupReads:
+    constantRate:
+      startAfter: populate
+      usersPerSec: 10000
+      maxSessions: 11000
+      duration: 1m
+      isWarmup: true
+      scenario: &get
+      - getData:
+        - randomInt: cacheKey <- 0 .. 9999
+        - hotrodRequest:
+            get: benchmark-cache
+            key: key-${cacheKey}
+
+- warmupWrites:
+    constantRate:
+      startAfter: populate
+      usersPerSec: 10000
+      maxSessions: 11000
+      duration: 1m
+      isWarmup: true
+      scenario: &put
+      - putData:
+        - randomInt: cacheKey <- 0 .. 9999
+        - randomUUID: cacheValue
+        - hotrodRequest:
+            put: benchmark-cache
+            key: key-${cacheKey}
+            value: value-${cacheValue}
+
+- benchmarkReads:
+    constantRate:
+      startAfter:
+      - warmupReads
+      - warmupWrites
+      usersPerSec: 40000
+      maxSessions: 41000
+      duration: 2m
+      maxDuration: 3m
+      scenario: *get
+
+- benchmarkWrites:
+    constantRate:
+      startAfter:
+      - warmupReads
+      - warmupWrites
+      usersPerSec: 10000
+      maxSessions: 11000
+      duration: 2m
+      maxDuration: 3m
+      scenario: *put

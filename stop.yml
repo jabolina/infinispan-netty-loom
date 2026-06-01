@@ -1,0 +1,82 @@
+- name: Stop Infinispan server on cluster nodes
+  hosts: "instances:!controller"
+  vars:
+    remote_folder: "/home/{{ ansible_user }}"
+  tasks:
+    - name: Read pidstat PID
+      ansible.builtin.slurp:
+        src: "{{ remote_folder }}/pidstat.pid"
+      register: pidstat_pid_file
+      ignore_errors: true
+
+    - name: Stop pidstat
+      ansible.builtin.shell: "kill {{ pidstat_pid_file.content | b64decode | trim }}"
+      when: pidstat_pid_file is succeeded
+      ignore_errors: true
+
+    - name: Remove pidstat PID file
+      ansible.builtin.file:
+        path: "{{ remote_folder }}/pidstat.pid"
+        state: absent
+
+    - name: Read mpstat PID
+      ansible.builtin.slurp:
+        src: "{{ remote_folder }}/mpstat.pid"
+      register: mpstat_pid_file
+      ignore_errors: true
+
+    - name: Stop mpstat
+      ansible.builtin.shell: "kill {{ mpstat_pid_file.content | b64decode | trim }}"
+      when: mpstat_pid_file is succeeded
+      ignore_errors: true
+
+    - name: Remove mpstat PID file
+      ansible.builtin.file:
+        path: "{{ remote_folder }}/mpstat.pid"
+        state: absent
+
+    - name: Check if perf stat PID file exists
+      ansible.builtin.stat:
+        path: "{{ remote_folder }}/perf-stat.pid"
+      register: perf_stat_pid_exists
+
+    - name: Read perf stat PID
+      ansible.builtin.slurp:
+        src: "{{ remote_folder }}/perf-stat.pid"
+      register: perf_stat_pid_file
+      when: perf_stat_pid_exists.stat.exists
+
+    - name: Stop perf stat (SIGINT to flush output)
+      ansible.builtin.shell: "kill -INT {{ perf_stat_pid_file.content | b64decode | trim }}"
+      when: perf_stat_pid_exists.stat.exists and perf_stat_pid_file is succeeded
+      ignore_errors: true
+
+    - name: Remove perf stat PID file
+      ansible.builtin.file:
+        path: "{{ remote_folder }}/perf-stat.pid"
+        state: absent
+      when: perf_stat_pid_exists.stat.exists
+
+    - name: Read server PID
+      ansible.builtin.slurp:
+        src: "{{ remote_folder }}/infinispan-server.pid"
+      register: pid_file
+      ignore_errors: true
+
+    - name: Stop Infinispan server
+      ansible.builtin.shell: "kill {{ pid_file.content | b64decode | trim }}"
+      when: pid_file is succeeded
+      ignore_errors: true
+
+    - name: Wait for server to stop
+      ansible.builtin.wait_for:
+        port: 11222
+        host: "{{ ansible_facts.default_ipv4.address }}"
+        state: stopped
+        timeout: 30
+      when: pid_file is succeeded
+
+    - name: Remove PID file
+      ansible.builtin.file:
+        path: "{{ remote_folder }}/infinispan-server.pid"
+        state: absent

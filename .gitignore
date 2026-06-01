@@ -1,0 +1,11 @@
+aws-ec2.yml
+roles/
+jbang-catalog/
+ansible.cfg
+data/
+*.pem
+*_inventory.yaml
+
+baseline-4.2/
+custom-jdk/
+

@@ -1,0 +1,62 @@
+- name: Generate run timestamp
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Set run timestamp
+      ansible.builtin.set_fact:
+        run_date: "{{ now(fmt='%Y%m%d') }}"
+        run_time: "{{ now(fmt='%H%M') }}"
+
+- name: Start servers and monitoring
+  ansible.builtin.import_playbook: start.yml
+
+- name: Wait for cluster to form
+  hosts: "instances:!controller"
+  vars:
+    expected_nodes: "{{ groups['instances'] | difference(groups['controller']) | length }}"
+  tasks:
+    - name: Wait until all nodes have joined the cluster
+      ansible.builtin.shell: >
+        curl -sf --digest -u admin:password
+        'http://{{ ansible_facts.default_ipv4.address }}:11222/rest/v2/container/health' || echo '{}'
+      register: cluster_health
+      until: (cluster_health.stdout | from_json).get('cluster_health', {}).get('number_of_nodes', 0) | int == expected_nodes | int
+      retries: 30
+      delay: 2
+      run_once: true
+
+    - name: Show cluster status
+      ansible.builtin.debug:
+        msg: "Cluster formed with {{ (cluster_health.stdout | from_json).cluster_health.number_of_nodes }} nodes ({{ (cluster_health.stdout | from_json).cluster_health.health_status }})"
+      run_once: true
+
+- name: Run benchmark from controller
+  hosts: controller
+  vars:
+    benchmark: hf-hr-benchmark.yaml
+    taskset_cores: "0-6"
+    run_date: "{{ hostvars['localhost']['run_date'] }}"
+    run_time: "{{ hostvars['localhost']['run_time'] }}"
+  tasks:
+    - name: Run Hyperfoil benchmark
+      ansible.builtin.shell: |
+        cd /home/{{ ansible_user }}/jbang-catalog
+        taskset -c {{ taskset_cores }} jbang --fresh run@. {{ benchmark }} --output ../run-{{ run_date }}-{{ run_time }}.html \
+          2>&1 | tee /home/{{ ansible_user }}/run-{{ run_date }}-{{ run_time }}.log
+      args:
+        executable: /bin/bash
+      register: benchmark_result
+
+    - name: Show benchmark output
+      ansible.builtin.debug:
+        msg: "{{ benchmark_result.stdout_lines[-10:] }}"
+
+- name: Stop servers and monitoring
+  ansible.builtin.import_playbook: stop.yml
+
+- name: Download all results
+  ansible.builtin.import_playbook: download.yml
+  vars:
+    data_subdir: "{{ hostvars['localhost']['run_date'] }}/{{ hostvars['localhost']['run_time'] }}"
+    run_label: "{{ hostvars['localhost']['run_date'] }}-{{ hostvars['localhost']['run_time'] }}"

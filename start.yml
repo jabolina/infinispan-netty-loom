@@ -1,0 +1,98 @@
+- name: Start Infinispan server on cluster nodes
+  hosts: "instances:!controller"
+  vars:
+    remote_folder: "/home/{{ ansible_user }}/infinispan"
+    java_opts: ""
+    jfr: true
+    loom: false
+    loom_install_dir: "/home/{{ ansible_user }}/loom-jdk"
+    loom_opts: "-Djdk.virtualThreadScheduler.implClass=io.netty.loom.scheduler.NettyScheduler"
+    pidstat_interval: 1
+  tasks:
+    - name: Build JFR flags
+      ansible.builtin.set_fact:
+        jfr_opts: "-XX:StartFlightRecording=name=benchmark,filename=/home/{{ ansible_user }}/benchmark.jfr,dumponexit=true,settings=profile"
+      when: jfr | bool
+
+    - name: Start Infinispan server
+      ansible.builtin.shell: |
+        {% if loom | bool %}export JAVA_HOME={{ loom_install_dir }}
+        {% endif %}nohup {{ remote_folder }}/bin/server.sh \
+          -b {{ ansible_facts.default_ipv4.address }} \
+          &> /home/{{ ansible_user }}/infinispan-server.log &
+        echo $!
+      args:
+        executable: /bin/bash
+      environment: >-
+        {{
+          {'JAVA_OPTS': java_opts ~ ' ' ~ (jfr_opts | default('')) ~ (' ' ~ loom_opts if loom | bool else '')}
+          | combine({'JAVA_HOME': loom_install_dir} if loom | bool else {})
+        }}
+      register: server_start
+
+    - name: Wait for server to start
+      ansible.builtin.wait_for:
+        port: 11222
+        host: "{{ ansible_facts.default_ipv4.address }}"
+        timeout: 60
+
+    - name: Resolve JVM PID
+      ansible.builtin.shell: pgrep -f infinispan-server-runtime
+      register: jvm_pid
+      changed_when: false
+
+    - name: Store server PID (JVM)
+      ansible.builtin.copy:
+        content: "{{ jvm_pid.stdout_lines[0] }}"
+        dest: "/home/{{ ansible_user }}/infinispan-server.pid"
+
+    - name: Start pidstat monitoring
+      ansible.builtin.shell: |
+        nohup pidstat -p {{ jvm_pid.stdout_lines[0] }} -u -w -t -r {{ pidstat_interval }} \
+          &> /home/{{ ansible_user }}/pidstat.log &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: pidstat_start
+
+    - name: Store pidstat PID
+      ansible.builtin.copy:
+        content: "{{ pidstat_start.stdout_lines[-1] }}"
+        dest: "/home/{{ ansible_user }}/pidstat.pid"
+
+    - name: Start mpstat monitoring
+      ansible.builtin.shell: |
+        nohup mpstat -P ALL {{ pidstat_interval }} \
+          &> /home/{{ ansible_user }}/mpstat.log &
+        echo $!
+      args:
+        executable: /bin/bash
+      register: mpstat_start
+
+    - name: Store mpstat PID
+      ansible.builtin.copy:
+        content: "{{ mpstat_start.stdout_lines[-1] }}"
+        dest: "/home/{{ ansible_user }}/mpstat.pid"
+
+    - name: Check if perf is available
+      ansible.builtin.command: perf --version
+      register: perf_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Start perf stat monitoring
+      ansible.builtin.shell: |
+        nohup perf stat -p {{ jvm_pid.stdout_lines[0] }} \
+          -o /home/{{ ansible_user }}/perf-stat.txt \
+          &> /home/{{ ansible_user }}/perf-stat-err.log &
+        echo $!
+      when: perf_check is succeeded
+      args:
+        executable: /bin/bash
+      register: perf_stat_start
+
+    - name: Store perf stat PID
+      ansible.builtin.copy:
+        content: "{{ perf_stat_start.stdout_lines[-1] }}"
+        dest: "/home/{{ ansible_user }}/perf-stat.pid"
+      when: perf_check is succeeded
