@@ -6,6 +6,8 @@
     jdk_version: "25.0.2-open"
     loom_base_url: "https://builds.shipilev.net/openjdk-jdk-loom"
     loom_install_dir: "/home/{{ ansible_user }}/loom-jdk"
+    asprof_version: "4.4"
+    asprof_install_dir: "/home/{{ ansible_user }}/async-profiler"
   tasks:
     - name: Install system packages
       package:
@@ -127,6 +129,51 @@
       ansible.builtin.debug:
         msg: "{{ loom_version.stderr_lines }}"
       when: setup | bool
+
+    - name: Install async-profiler
+      when: setup | bool
+      block:
+        - name: Resolve async-profiler architecture
+          ansible.builtin.set_fact:
+            asprof_arch: "{{ 'arm64' if ansible_facts.architecture == 'aarch64' else 'x64' }}"
+
+        - name: Download async-profiler {{ asprof_version }}
+          ansible.builtin.get_url:
+            url: "https://github.com/async-profiler/async-profiler/releases/download/v{{ asprof_version }}/async-profiler-{{ asprof_version }}-linux-{{ asprof_arch }}.tar.gz"
+            dest: "/home/{{ ansible_user }}/async-profiler.tar.gz"
+
+        - name: Remove previous async-profiler installation
+          ansible.builtin.file:
+            path: "{{ asprof_install_dir }}"
+            state: absent
+
+        - name: Create async-profiler directory
+          ansible.builtin.file:
+            path: "{{ asprof_install_dir }}"
+            state: directory
+
+        - name: Extract async-profiler
+          ansible.builtin.unarchive:
+            src: "/home/{{ ansible_user }}/async-profiler.tar.gz"
+            dest: "{{ asprof_install_dir }}"
+            remote_src: true
+            extra_opts: [--strip-components=1]
+
+        - name: Symlink asprof to PATH
+          ansible.builtin.file:
+            src: "{{ asprof_install_dir }}/bin/asprof"
+            dest: /usr/local/bin/asprof
+            state: link
+          become: true
+
+        - name: Verify async-profiler
+          ansible.builtin.shell: asprof --version
+          register: asprof_version_check
+          changed_when: false
+
+        - name: Show async-profiler version
+          ansible.builtin.debug:
+            msg: "{{ asprof_version_check.stdout_lines }}"
 
 - name: Deploy Infinispan server to cluster nodes
   hosts: "instances:!controller"

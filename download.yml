@@ -95,6 +95,33 @@
         flat: true
       loop: "{{ jfr_files.files }}"
 
+    - name: Download async-profiler output
+      block:
+        - name: Check async-profiler control file
+          ansible.builtin.stat:
+            path: "/home/{{ ansible_user }}/asprof.ctrl"
+          register: asprof_ctrl
+
+        - name: Read async-profiler control file
+          ansible.builtin.slurp:
+            src: "/home/{{ ansible_user }}/asprof.ctrl"
+          register: asprof_ctrl_content
+          when: asprof_ctrl.stat.exists
+
+        - name: Download async-profiler output file
+          ansible.builtin.fetch:
+            src: "/home/{{ ansible_user }}/{{ asprof_ctrl_content.content | b64decode | trim }}"
+            dest: "{{ dl_node }}/"
+            flat: true
+          when: asprof_ctrl.stat.exists
+          ignore_errors: true
+
+        - name: Remove async-profiler control file
+          ansible.builtin.file:
+            path: "/home/{{ ansible_user }}/asprof.ctrl"
+            state: absent
+          when: asprof_ctrl.stat.exists
+
     - name: Download server log
       ansible.builtin.fetch:
         src: "/home/{{ ansible_user }}/infinispan-server.log"

@@ -63,6 +63,27 @@
       register: pid_file
       ignore_errors: true
 
+    - name: Stop async-profiler
+      block:
+        - name: Check async-profiler control file
+          ansible.builtin.stat:
+            path: "{{ remote_folder }}/asprof.ctrl"
+          register: asprof_ctrl
+
+        - name: Read async-profiler control file
+          ansible.builtin.slurp:
+            src: "{{ remote_folder }}/asprof.ctrl"
+          register: asprof_ctrl_content
+          when: asprof_ctrl.stat.exists
+
+        - name: Stop async-profiler and dump output
+          ansible.builtin.shell: |
+            asprof stop -f /home/{{ ansible_user }}/{{ asprof_ctrl_content.content | b64decode | trim }} {{ pid_file.content | b64decode | trim }}
+          args:
+            executable: /bin/bash
+          when: asprof_ctrl.stat.exists and pid_file is succeeded
+          ignore_errors: true
+
     - name: Stop Infinispan server
       ansible.builtin.shell: "kill {{ pid_file.content | b64decode | trim }}"
       when: pid_file is succeeded

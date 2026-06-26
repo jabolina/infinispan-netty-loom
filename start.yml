@@ -6,8 +6,10 @@
     jfr: true
     loom: false
     loom_install_dir: "/home/{{ ansible_user }}/loom-jdk"
-    loom_opts: "-Djdk.virtualThreadScheduler.implClass=io.netty.loom.scheduler.NettyScheduler"
+    loom_opts: "-Djdk.virtualThreadScheduler.implClass=io.netty.loom.scheduler.NettyScheduler -Djdk.pollerMode=3 -Dio.netty.loom.replaceBuiltinScheduler=true -Dio.netty.loom.workstealing.enabled=true"
     pidstat_interval: 1
+    asprof_args: ""
+    asprof_file: "asprof-profile.html"
   tasks:
     - name: Build JFR flags
       ansible.builtin.set_fact:
@@ -96,3 +98,17 @@
         content: "{{ perf_stat_start.stdout_lines[-1] }}"
         dest: "/home/{{ ansible_user }}/perf-stat.pid"
       when: perf_check is succeeded
+
+    - name: Attach async-profiler
+      when: asprof_args | default('') | length > 0
+      block:
+        - name: Start async-profiler
+          ansible.builtin.shell: |
+            asprof start {{ asprof_args }} {{ jvm_pid.stdout_lines[0] }}
+          args:
+            executable: /bin/bash
+
+        - name: Write async-profiler control file
+          ansible.builtin.copy:
+            content: "{{ asprof_file }}"
+            dest: "/home/{{ ansible_user }}/asprof.ctrl"
