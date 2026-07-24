@@ -1,4 +1,10 @@
 name: hotrod-benchmark
+{% if agents is defined and agents | length > 0 %}
+agents:
+{% for ip in agents %}
+  agent-{{ loop.index0 }}: {{ ip }}
+{% endfor %}
+{% endif %}
 hotrod:
 - uri: hotrod://admin:password@{{ benchmark_server }}:11222
   caches:
@@ -58,8 +64,8 @@ phases:
       startAfter:
       - warmupReads
       - warmupWrites
-      usersPerSec: 40000
-      maxSessions: 41000
+      usersPerSec: 352000
+      maxSessions: 353000
       duration: 2m
       maxDuration: 3m
       scenario: *get
@@ -69,8 +75,8 @@ phases:
       startAfter:
       - warmupReads
       - warmupWrites
-      usersPerSec: 10000
-      maxSessions: 11000
+      usersPerSec: 88000
+      maxSessions: 89000
       duration: 2m
       maxDuration: 3m
       scenario: *put

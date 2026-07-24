@@ -5,6 +5,7 @@
     sdkman_folder: "/home/{{ ansible_user }}/.sdkman"
     jdk_version: "25.0.2-open"
     loom_base_url: "https://builds.shipilev.net/openjdk-jdk-loom"
+    loom_jdk: ""
     loom_install_dir: "/home/{{ ansible_user }}/loom-jdk"
     asprof_version: "4.4"
     asprof_install_dir: "/home/{{ ansible_user }}/async-profiler"
@@ -14,7 +15,7 @@
         name: "{{ item }}"
         state: present
       become: true
-      loop: [unzip, zip, rsync, perf]
+      loop: [unzip, zip, rsync, "{{ 'linux-tools-' ~ ansible_kernel if ansible_os_family == 'Debian' else 'perf' }}"]
       when: setup | bool
 
     - name: Allow unprivileged perf events
@@ -26,7 +27,7 @@
 
     - name: Install xz for Loom JDK extraction
       package:
-        name: xz
+        name: "{{ 'xz-utils' if ansible_os_family == 'Debian' else 'xz' }}"
         state: present
       become: true
       when: setup | bool
@@ -74,61 +75,80 @@
         executable: /bin/bash
       when: setup | bool
 
-    - name: Resolve Loom JDK architecture
-      ansible.builtin.set_fact:
-        loom_arch: "{{ ansible_facts.architecture }}"
-      when: setup | bool
-
-    - name: Download Loom JDK
-      ansible.builtin.get_url:
-        url: "{{ loom_base_url }}/openjdk-jdk-loom-linux-{{ loom_arch }}-server.tar.xz"
-        dest: "/home/{{ ansible_user }}/loom-jdk.tar.xz"
-      when: setup | bool
-      register: loom_download
-
-    - name: Check if Loom JDK is already extracted
-      ansible.builtin.stat:
-        path: "{{ loom_install_dir }}/bin/java"
-      register: loom_java_bin
-      when: setup | bool
-
-    - name: Remove previous Loom JDK installation
+    - name: Symlink SDKMAN binaries to PATH
       ansible.builtin.file:
-        path: "{{ loom_install_dir }}"
-        state: absent
-      when: setup | bool and (loom_download is changed or not loom_java_bin.stat.exists)
-
-    - name: Create Loom JDK directory
-      ansible.builtin.file:
-        path: "{{ loom_install_dir }}"
-        state: directory
-      when: setup | bool
-
-    - name: Extract Loom JDK
-      ansible.builtin.shell: |
-        tar -xJf /home/{{ ansible_user }}/loom-jdk.tar.xz -C {{ loom_install_dir }} --strip-components=1
-      args:
-        executable: /bin/bash
-        creates: "{{ loom_install_dir }}/bin/java"
-      when: setup | bool
-
-    - name: Symlink release JVM as server
-      ansible.builtin.file:
-        src: "{{ loom_install_dir }}/lib/release"
-        dest: "{{ loom_install_dir }}/lib/server"
+        src: "{{ sdkman_folder }}/candidates/{{ item }}/current/bin/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
         state: link
-        force: true
+      become: true
+      loop: [java, jbang]
       when: setup | bool
 
-    - name: Verify Loom JDK
-      ansible.builtin.shell: "{{ loom_install_dir }}/bin/java -version"
-      register: loom_version
+    - name: Install Loom JDK
       when: setup | bool
+      block:
+        - name: Resolve Loom JDK architecture
+          ansible.builtin.set_fact:
+            loom_arch: "{{ ansible_facts.architecture }}"
+          when: loom_jdk | length == 0
 
-    - name: Show Loom JDK version
-      ansible.builtin.debug:
-        msg: "{{ loom_version.stderr_lines }}"
-      when: setup | bool
+        - name: Download Loom JDK from Shipilev
+          ansible.builtin.get_url:
+            url: "{{ loom_base_url }}/openjdk-jdk-loom-linux-{{ loom_arch }}-server.tar.xz"
+            dest: "/home/{{ ansible_user }}/loom-jdk.tar.xz"
+          when: loom_jdk | length == 0
+          register: loom_download
+
+        - name: Upload custom Loom JDK
+          ansible.builtin.copy:
+            src: "{{ loom_jdk }}"
+            dest: "/home/{{ ansible_user }}/loom-jdk.tar.xz"
+          when: loom_jdk | length > 0
+          register: loom_upload
+
+        - name: Check if Loom JDK is already extracted
+          ansible.builtin.stat:
+            path: "{{ loom_install_dir }}/bin/java"
+          register: loom_java_bin
+
+        - name: Remove previous Loom JDK installation
+          ansible.builtin.file:
+            path: "{{ loom_install_dir }}"
+            state: absent
+          when: loom_download is changed or loom_upload is changed or not loom_java_bin.stat.exists
+
+        - name: Create Loom JDK directory
+          ansible.builtin.file:
+            path: "{{ loom_install_dir }}"
+            state: directory
+
+        - name: Extract Loom JDK
+          ansible.builtin.shell: |
+            tar -xf /home/{{ ansible_user }}/loom-jdk.tar.xz -C {{ loom_install_dir }} --strip-components=1
+          args:
+            executable: /bin/bash
+            creates: "{{ loom_install_dir }}/bin/java"
+
+        - name: Check for lib/server directory
+          ansible.builtin.stat:
+            path: "{{ loom_install_dir }}/lib/server"
+          register: loom_lib_server
+
+        - name: Symlink release JVM as server
+          ansible.builtin.file:
+            src: "{{ loom_install_dir }}/lib/release"
+            dest: "{{ loom_install_dir }}/lib/server"
+            state: link
+            force: true
+          when: not loom_lib_server.stat.exists
+
+        - name: Verify Loom JDK
+          ansible.builtin.shell: "{{ loom_install_dir }}/bin/java -version"
+          register: loom_version
+
+        - name: Show Loom JDK version
+          ansible.builtin.debug:
+            msg: "{{ loom_version.stderr_lines }}"
 
     - name: Install async-profiler
       when: setup | bool
@@ -175,8 +195,58 @@
           ansible.builtin.debug:
             msg: "{{ asprof_version_check.stdout_lines }}"
 
+- name: Set up SSH from controller to agent nodes
+  hosts: instances
+  tasks:
+    - name: Generate SSH key pair on controller
+      ansible.builtin.shell: |
+        ssh-keygen -t rsa -b 4096 -f /home/{{ ansible_user }}/.ssh/id_rsa -N ""
+      args:
+        creates: /home/{{ ansible_user }}/.ssh/id_rsa
+      when:
+        - groups['agents'] | default([]) | length > 0
+        - inventory_hostname in groups['controller']
+
+    - name: Read controller public key
+      ansible.builtin.slurp:
+        src: /home/{{ ansible_user }}/.ssh/id_rsa.pub
+      register: controller_pubkey
+      when:
+        - groups['agents'] | default([]) | length > 0
+        - inventory_hostname in groups['controller']
+
+    - name: Disable strict host key checking on controller
+      ansible.builtin.copy:
+        content: |
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+        dest: /home/{{ ansible_user }}/.ssh/config
+        mode: "0600"
+      when:
+        - groups['agents'] | default([]) | length > 0
+        - inventory_hostname in groups['controller']
+
+    - name: Add controller public key to authorized_keys
+      ansible.posix.authorized_key:
+        user: "{{ ansible_user }}"
+        key: "{{ hostvars[groups['controller'][0]].controller_pubkey.content | b64decode }}"
+        state: present
+      when:
+        - groups['agents'] | default([]) | length > 0
+        - inventory_hostname in groups['agents']
+        - hostvars[groups['controller'][0]].controller_pubkey is defined
+
+    - name: Suppress SSH login banner on agent nodes
+      ansible.builtin.file:
+        path: /home/{{ ansible_user }}/.hushlogin
+        state: touch
+      when:
+        - groups['agents'] | default([]) | length > 0
+        - inventory_hostname in groups['agents']
+
 - name: Deploy Infinispan server to cluster nodes
-  hosts: "instances:!controller"
+  hosts: "instances:!controller:!agents"
   vars:
     remote_folder: "/home/{{ ansible_user }}/infinispan"
   tasks:
@@ -193,7 +263,7 @@
     - name: Collect private IPs from all server nodes
       ansible.builtin.set_fact:
         server_ips: "{{ server_ips | default([]) + [hostvars[item].ansible_facts.default_ipv4.address] }}"
-      loop: "{{ groups['instances'] | difference(groups['controller']) }}"
+      loop: "{{ groups['instances'] | difference(groups['controller']) | difference(groups['agents'] | default([])) }}"
 
     - name: Render server configuration
       ansible.builtin.template:
@@ -212,6 +282,7 @@
 
     - name: Create admin user
       ansible.builtin.shell: |
+        source /home/{{ ansible_user }}/.sdkman/bin/sdkman-init.sh
         {{ remote_folder }}/bin/cli.sh user create admin -p password -g admin
       args:
         executable: /bin/bash
@@ -227,9 +298,26 @@
         src: jbang-catalog/
         dest: "{{ remote_folder }}/jbang-catalog"
 
+    - name: Create Maven local repository directory on controller
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.m2/repository/io/hyperfoil"
+        state: directory
+      when: groups['agents'] | default([]) | length > 0
+
+    - name: Upload Hyperfoil SNAPSHOT artifacts to controller Maven cache
+      ansible.posix.synchronize:
+        src: "{{ lookup('env', 'HOME') }}/.m2/repository/io/hyperfoil/"
+        dest: "/home/{{ ansible_user }}/.m2/repository/io/hyperfoil/"
+      when: groups['agents'] | default([]) | length > 0
+
+    - name: Collect agent private IPs
+      ansible.builtin.set_fact:
+        agents: "{{ agents | default([]) + [hostvars[item].ansible_facts.default_ipv4.address] }}"
+      loop: "{{ groups['agents'] | default([]) }}"
+
     - name: Resolve server node address for benchmark
       ansible.builtin.set_fact:
-        benchmark_server: "{{ hostvars[groups['instances'] | difference(groups['controller']) | first].ansible_facts.default_ipv4.address }}"
+        benchmark_server: "{{ hostvars[groups['instances'] | difference(groups['controller']) | difference(groups['agents'] | default([])) | first].ansible_facts.default_ipv4.address }}"
 
     - name: Render benchmark definition
       ansible.builtin.template:

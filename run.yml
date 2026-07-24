@@ -12,9 +12,9 @@
   ansible.builtin.import_playbook: start.yml
 
 - name: Wait for cluster to form
-  hosts: "instances:!controller"
+  hosts: "instances:!controller:!agents"
   vars:
-    expected_nodes: "{{ groups['instances'] | difference(groups['controller']) | length }}"
+    expected_nodes: "{{ groups['instances'] | difference(groups['controller']) | difference(groups['agents'] | default([])) | length }}"
   tasks:
     - name: Wait until all nodes have joined the cluster
       ansible.builtin.shell: >
@@ -41,8 +41,9 @@
   tasks:
     - name: Run Hyperfoil benchmark
       ansible.builtin.shell: |
+        source /home/{{ ansible_user }}/.sdkman/bin/sdkman-init.sh
         cd /home/{{ ansible_user }}/jbang-catalog
-        taskset -c {{ taskset_cores }} jbang --fresh run@. {{ benchmark }} --output ../run-{{ run_date }}-{{ run_time }}.html \
+        taskset -c {{ taskset_cores }} jbang --fresh run@. {% if groups['agents'] | default([]) | length > 0 %}--clustered {% endif %}{{ benchmark }} --output ../run-{{ run_date }}-{{ run_time }}.html \
           2>&1 | tee /home/{{ ansible_user }}/run-{{ run_date }}-{{ run_time }}.log
       args:
         executable: /bin/bash

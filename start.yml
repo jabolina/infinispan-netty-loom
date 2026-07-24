@@ -1,12 +1,14 @@
 - name: Start Infinispan server on cluster nodes
-  hosts: "instances:!controller"
+  hosts: "instances:!controller:!agents"
   vars:
     remote_folder: "/home/{{ ansible_user }}/infinispan"
     java_opts: ""
     jfr: true
     loom: false
+    sdkman_java: "/home/{{ ansible_user }}/.sdkman/candidates/java/current"
     loom_install_dir: "/home/{{ ansible_user }}/loom-jdk"
-    loom_opts: "-Djdk.virtualThreadScheduler.implClass=io.netty.loom.scheduler.NettyScheduler -Djdk.pollerMode=3 -Dio.netty.loom.replaceBuiltinScheduler=true -Dio.netty.loom.workstealing.enabled=true"
+    #loom_opts: "-Djdk.virtualThreadScheduler.implClass=io.netty.loom.scheduler.NettyScheduler -Djdk.pollerMode=3 -Dio.netty.loom.replaceBuiltinScheduler=true -Dio.netty.loom.workstealing.enabled=true"
+    loom_opts: "-Djdk.pollerMode=3 -Dio.netty.loom.replaceBuiltinScheduler=true -Dio.netty.loom.workstealing.enabled=true"
     pidstat_interval: 1
     asprof_args: ""
     asprof_file: "asprof-profile.html"
@@ -28,7 +30,7 @@
       environment: >-
         {{
           {'JAVA_OPTS': java_opts ~ ' ' ~ (jfr_opts | default('')) ~ (' ' ~ loom_opts if loom | bool else '')}
-          | combine({'JAVA_HOME': loom_install_dir} if loom | bool else {})
+          | combine({'JAVA_HOME': loom_install_dir if loom | bool else sdkman_java})
         }}
       register: server_start
 

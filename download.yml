@@ -46,7 +46,7 @@
       when: data_subdir == ""
 
 - name: Download server monitoring data
-  hosts: "instances:!controller"
+  hosts: "instances:!controller:!agents"
   vars:
     local_data: "{{ playbook_dir }}/data"
     data_subdir: ""

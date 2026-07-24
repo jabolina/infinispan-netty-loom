@@ -1,5 +1,5 @@
 - name: Stop Infinispan server on cluster nodes
-  hosts: "instances:!controller"
+  hosts: "instances:!controller:!agents"
   vars:
     remote_folder: "/home/{{ ansible_user }}"
   tasks:

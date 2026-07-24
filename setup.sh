@@ -6,8 +6,6 @@ REPO_RAW="https://raw.githubusercontent.com/jgroups-extras/IspnPerfTest/master/a
 
 clean() {
     echo "Cleaning up generated files..."
-    rm -f aws-ec2.yml
-    rm -rf roles/
     rm -rf jbang-catalog/
     echo "Clean complete."
 }
