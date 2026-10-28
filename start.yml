@@ -8,7 +8,8 @@
     sdkman_java: "/home/{{ ansible_user }}/.sdkman/candidates/java/current"
     loom_install_dir: "/home/{{ ansible_user }}/loom-jdk"
     #loom_opts: "-Djdk.virtualThreadScheduler.implClass=io.netty.loom.scheduler.NettyScheduler -Djdk.pollerMode=3 -Dio.netty.loom.replaceBuiltinScheduler=true -Dio.netty.loom.workstealing.enabled=true"
-    loom_opts: "-Djdk.pollerMode=3 -Dio.netty.loom.replaceBuiltinScheduler=true -Dio.netty.loom.workstealing.enabled=true"
+#    loom_opts: "-Djdk.pollerMode=3 -Dio.netty.loom.replaceBuiltinScheduler=true -Dio.netty.loom.workstealing.enabled=true"
+    loom_opts: ""
     pidstat_interval: 1
     asprof_args: ""
     asprof_file: "asprof-profile.html"
